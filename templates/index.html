@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FedUp</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f0;
+      color: #1a1a1a;
+      min-height: 100vh;
+    }
+
+    header {
+      background: #1a1a1a;
+      color: #fff;
+      padding: 20px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.5px; }
+    header span { color: #f0a500; font-size: 1.6rem; }
+
+    #search-bar {
+      padding: 20px 32px 0;
+      max-width: 480px;
+    }
+    #search-bar input {
+      width: 100%;
+      padding: 10px 16px;
+      border: 1.5px solid #ddd;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      background: #fff;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #search-bar input:focus { border-color: #f0a500; }
+
+    #filters {
+      padding: 14px 32px 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    /* Toggle chips */
+    .filter-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1.5px solid #ddd;
+      background: #fff;
+      font-size: 0.83rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 0.12s, background 0.12s, color 0.12s;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .filter-chip:hover { border-color: #bbb; }
+    .filter-chip.active {
+      background: #1a1a1a;
+      border-color: #1a1a1a;
+      color: #fff;
+    }
+    .filter-chip.active .chip-icon { filter: brightness(10); }
+
+    /* Cuisine dropdown chip */
+    .filter-chip-select {
+      position: relative;
+    }
+    .filter-chip-select select {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+    }
+    .filter-chip-select.active {
+      background: #1a1a1a;
+      border-color: #1a1a1a;
+      color: #fff;
+    }
+
+    /* Rating sub-menu */
+    .rating-popover {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      background: #fff;
+      border: 1.5px solid #ddd;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      padding: 6px;
+      z-index: 50;
+      min-width: 120px;
+    }
+    .rating-wrap { position: relative; }
+    .rating-wrap.open .rating-popover { display: block; }
+    .rating-option {
+      padding: 7px 12px;
+      border-radius: 7px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+    .rating-option:hover { background: #f5f5f0; }
+    .rating-option.selected { background: #1a1a1a; color: #fff; }
+
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 20px;
+      padding: 24px 32px 48px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      cursor: pointer;
+      border: 1.5px solid transparent;
+      transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    }
+    .card:hover {
+      border-color: #f0a500;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      transform: translateY(-2px);
+    }
+    .card-name {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+      line-height: 1.3;
+    }
+    .card-cuisine {
+      font-size: 0.82rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+    .card-rating {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #fff8e8;
+      border: 1px solid #f0a500;
+      border-radius: 20px;
+      padding: 3px 10px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: #c47f00;
+    }
+    .card-rating.no-rating {
+      background: #f5f5f5;
+      border-color: #ddd;
+      color: #aaa;
+      font-weight: 400;
+    }
+
+    /* Modal */
+    #modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    #modal-overlay.open { display: flex; }
+
+    #modal {
+      background: #fff;
+      border-radius: 16px;
+      width: 100%;
+      max-width: 680px;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      animation: pop-in 0.18s ease;
+    }
+    @keyframes pop-in {
+      from { transform: scale(0.95); opacity: 0; }
+      to   { transform: scale(1);    opacity: 1; }
+    }
+
+    #modal-header {
+      padding: 24px 28px 16px;
+      border-bottom: 1px solid #eee;
+      position: sticky;
+      top: 0;
+      background: #fff;
+      border-radius: 16px 16px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    #modal-title { font-size: 1.4rem; font-weight: 700; line-height: 1.2; }
+    #modal-close {
+      background: #f0f0f0;
+      border: none;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-close:hover { background: #e0e0e0; }
+
+    #modal-body { padding: 20px 28px 28px; }
+
+    .info-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-size: 0.9rem;
+      color: #444;
+    }
+    .info-row .icon { font-size: 1rem; flex-shrink: 0; margin-top: 1px; }
+    .info-row a { color: #c47f00; text-decoration: none; }
+    .info-row a:hover { text-decoration: underline; }
+
+    .section-heading {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: #aaa;
+      margin: 24px 0 10px;
+    }
+
+    .deals-box {
+      background: #fff8e8;
+      border: 1px solid #f0a500;
+      border-radius: 8px;
+      padding: 12px 14px;
+      font-size: 0.88rem;
+      color: #7a5200;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
+    .menu-section { margin-bottom: 20px; }
+    .menu-section-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #1a1a1a;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 8px;
+    }
+    .menu-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px dashed #f0f0f0;
+      font-size: 0.88rem;
+    }
+    .menu-item:last-child { border-bottom: none; }
+    .menu-item-left { flex: 1; }
+    .menu-item-name { font-weight: 500; }
+    .menu-item-desc { color: #888; font-size: 0.82rem; margin-top: 2px; }
+    .menu-item-price { color: #c47f00; font-weight: 600; white-space: nowrap; }
+
+    .menu-link-btn {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 8px 16px;
+      background: #1a1a1a;
+      color: #fff;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    .menu-link-btn:hover { background: #333; }
+
+    .spinner {
+      text-align: center;
+      padding: 40px;
+      color: #aaa;
+      font-size: 0.9rem;
+    }
+    .no-results { padding: 40px 32px; color: #aaa; text-align: center; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span>🍽</span>
+  <h1>FedUp</h1>
+</header>
+
+<div id="search-bar">
+  <input type="text" id="search" placeholder="Search restaurants, cuisine…" />
+</div>
+
+<div id="filters">
+  <!-- Cuisine dropdown -->
+  <div class="filter-chip filter-chip-select" id="cuisine-chip">
+    <span class="chip-icon">🍴</span>
+    <span id="cuisine-label">Cuisine</span>
+    <span>▾</span>
+    <select id="cuisine-select">
+      <option value="">All cuisines</option>
+    </select>
+  </div>
+
+  <!-- Rating popover -->
+  <div class="rating-wrap" id="rating-wrap">
+    <div class="filter-chip" id="rating-chip">
+      <span class="chip-icon">★</span>
+      <span id="rating-label">Rating</span>
+      <span>▾</span>
+    </div>
+    <div class="rating-popover" id="rating-popover">
+      <div class="rating-option" data-min="">Any rating</div>
+      <div class="rating-option" data-min="3">★ 3+</div>
+      <div class="rating-option" data-min="4">★ 4+</div>
+      <div class="rating-option" data-min="4.5">★ 4.5+</div>
+    </div>
+  </div>
+
+  <!-- Deals toggle -->
+  <div class="filter-chip" id="deals-chip">
+    <span class="chip-icon">🏷</span> Deals
+  </div>
+
+  <!-- Events toggle -->
+  <div class="filter-chip" id="events-chip">
+    <span class="chip-icon">🎉</span> Events
+  </div>
+</div>
+
+<div id="grid"><div class="spinner">Loading…</div></div>
+
+<div id="modal-overlay">
+  <div id="modal">
+    <div id="modal-header">
+      <div id="modal-title"></div>
+      <button id="modal-close">✕</button>
+    </div>
+    <div id="modal-body"><div class="spinner">Loading…</div></div>
+  </div>
+</div>
+
+<script>
+  let allPlaces = [];
+  const filters = { search: '', cuisine: '', minRating: '', deals: false, events: false };
+
+  async function loadPlaces() {
+    const res = await fetch('/api/places');
+    allPlaces = await res.json();
+    buildCuisineOptions();
+    applyFilters();
+  }
+
+  function buildCuisineOptions() {
+    const seen = new Set();
+    allPlaces.forEach(p => {
+      const raw = p.cuisine || p.amenity || '';
+      raw.split(';').forEach(s => {
+        const label = s.replace(/_/g, ' ').trim();
+        if (label) seen.add(label.toLowerCase().replace(/\b\w/g, c => c.toUpperCase()));
+      });
+    });
+    const sel = document.getElementById('cuisine-select');
+    [...seen].sort().forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c;
+      sel.appendChild(opt);
+    });
+  }
+
+  function applyFilters() {
+    let places = allPlaces;
+    if (filters.search) {
+      const q = filters.search;
+      places = places.filter(p =>
+        p.name.toLowerCase().includes(q) ||
+        (p.cuisine || '').toLowerCase().includes(q) ||
+        (p.amenity || '').toLowerCase().includes(q)
+      );
+    }
+    if (filters.cuisine) {
+      places = places.filter(p => {
+        const raw = (p.cuisine || p.amenity || '').toLowerCase();
+        return raw.split(';').some(s => s.replace(/_/g,' ').trim() === filters.cuisine.toLowerCase());
+      });
+    }
+    if (filters.minRating) {
+      places = places.filter(p => p.rating && p.rating >= parseFloat(filters.minRating));
+    }
+    if (filters.deals) {
+      places = places.filter(p => p.has_deals);
+    }
+    if (filters.events) {
+      places = places.filter(p => p.has_events);
+    }
+    renderGrid(places);
+  }
+
+  function renderGrid(places) {
+    const grid = document.getElementById('grid');
+    if (!places.length) {
+      grid.innerHTML = '<div class="no-results">No restaurants match your filters.</div>';
+      return;
+    }
+    grid.innerHTML = places.map(p => `
+      <div class="card" onclick="openModal(${p.id})">
+        <div class="card-name">${p.name}</div>
+        <div class="card-cuisine">${formatCuisine(p.cuisine, p.amenity)}</div>
+        ${p.rating
+          ? `<div class="card-rating">★ ${p.rating}</div>`
+          : `<div class="card-rating no-rating">No rating yet</div>`}
+      </div>
+    `).join('');
+  }
+
+  // Search
+  document.getElementById('search').addEventListener('input', e => {
+    filters.search = e.target.value.toLowerCase();
+    applyFilters();
+  });
+
+  // Cuisine select
+  const cuisineChip = document.getElementById('cuisine-chip');
+  document.getElementById('cuisine-select').addEventListener('change', e => {
+    filters.cuisine = e.target.value;
+    const label = filters.cuisine || 'Cuisine';
+    document.getElementById('cuisine-label').textContent = label;
+    cuisineChip.classList.toggle('active', !!filters.cuisine);
+    applyFilters();
+  });
+
+  // Rating popover
+  const ratingWrap = document.getElementById('rating-wrap');
+  const ratingChip = document.getElementById('rating-chip');
+  ratingChip.addEventListener('click', e => {
+    e.stopPropagation();
+    ratingWrap.classList.toggle('open');
+  });
+  document.querySelectorAll('.rating-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      filters.minRating = opt.dataset.min;
+      document.querySelectorAll('.rating-option').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      const label = filters.minRating ? `★ ${filters.minRating}+` : 'Rating';
+      document.getElementById('rating-label').textContent = label;
+      ratingChip.classList.toggle('active', !!filters.minRating);
+      ratingWrap.classList.remove('open');
+      applyFilters();
+    });
+  });
+  document.addEventListener('click', () => ratingWrap.classList.remove('open'));
+
+  // Deals toggle
+  document.getElementById('deals-chip').addEventListener('click', function() {
+    filters.deals = !filters.deals;
+    this.classList.toggle('active', filters.deals);
+    applyFilters();
+  });
+
+  // Events toggle
+  document.getElementById('events-chip').addEventListener('click', function() {
+    filters.events = !filters.events;
+    this.classList.toggle('active', filters.events);
+    applyFilters();
+  });
+
+  async function openModal(id) {
+    document.getElementById('modal-overlay').classList.add('open');
+    document.getElementById('modal-title').textContent = '…';
+    document.getElementById('modal-body').innerHTML = '<div class="spinner">Loading…</div>';
+
+    const res = await fetch(`/api/places/${id}`);
+    const p = await res.json();
+
+    document.getElementById('modal-title').textContent = p.name;
+    document.getElementById('modal-body').innerHTML = buildModalBody(p);
+  }
+
+  function buildModalBody(p) {
+    let html = '';
+
+    // Info rows
+    if (p.address) html += row('📍', p.address);
+    if (p.phone)   html += row('📞', `<a href="tel:${p.phone}">${p.phone}</a>`);
+    if (p.website) html += row('🌐', `<a href="${p.website}" target="_blank">${p.website}</a>`);
+    const cuisine = formatCuisine(p.cuisine, p.amenity);
+    if (cuisine) html += row('🍴', cuisine);
+    if (p.rating)  html += row('★', `${p.rating}${p.review_count ? ` · ${p.review_count} reviews` : ''}`);
+
+    // Hours
+    if (p.hours && Array.isArray(p.hours) && p.hours.length) {
+      html += `<div class="section-heading">Hours</div>`;
+      const days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+      html += p.hours.map(h => {
+        const day = days[h.day] || h.day;
+        const open  = formatTime(h.start);
+        const close = formatTime(h.end);
+        return row('🕐', `${day}: ${open} – ${close}`);
+      }).join('');
+    }
+
+    // Deals
+    if (p.deals_text) {
+      html += `<div class="section-heading">Deals &amp; Specials</div>
+               <div class="deals-box">${escHtml(p.deals_text)}</div>`;
+    }
+
+    // Menu
+    if (p.menu_sections && p.menu_sections.length) {
+      html += `<div class="section-heading">Menu</div>`;
+      html += p.menu_sections.map(s => `
+        <div class="menu-section">
+          <div class="menu-section-title">${escHtml(s.section)}</div>
+          ${s.items.map(item => `
+            <div class="menu-item">
+              <div class="menu-item-left">
+                <div class="menu-item-name">${escHtml(item.name)}</div>
+                ${item.desc ? `<div class="menu-item-desc">${escHtml(item.desc)}</div>` : ''}
+              </div>
+              ${item.price ? `<div class="menu-item-price">$${escHtml(item.price)}</div>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `).join('');
+    }
+
+    // Menu link fallback
+    if (p.menu_url) {
+      html += `<div class="section-heading">Full Menu</div>
+               <a class="menu-link-btn" href="${p.menu_url}" target="_blank">View Full Menu →</a>`;
+    }
+
+    return html || '<p style="color:#aaa;font-size:.9rem">No additional info available.</p>';
+  }
+
+  function formatCuisine(cuisine, amenity) {
+    const raw = cuisine || amenity || '';
+    return raw
+      .split(';')
+      .map(s => s.replace(/_/g, ' ').trim())
+      .filter(Boolean)
+      .join(' · ')
+      .toLowerCase()
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  function row(icon, content) {
+    return `<div class="info-row"><span class="icon">${icon}</span><span>${content}</span></div>`;
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function formatTime(t) {
+    if (!t) return '';
+    const s = String(t).padStart(4, '0');
+    let h = parseInt(s.slice(0,2), 10);
+    const m = s.slice(2);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${h}:${m} ${ampm}`;
+  }
+
+  document.getElementById('modal-close').addEventListener('click', () => {
+    document.getElementById('modal-overlay').classList.remove('open');
+  });
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('modal-overlay'))
+      document.getElementById('modal-overlay').classList.remove('open');
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.getElementById('modal-overlay').classList.remove('open');
+  });
+
+  loadPlaces();
+</script>
+</body>
+</html>

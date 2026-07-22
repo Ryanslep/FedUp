@@ -1,8 +1,8 @@
 """
-FedUp scraper — enriches the places table with data from Yelp and restaurant websites.
+FedUp scraper — enriches the places table with data from Foursquare and restaurant websites.
 
 Usage:
-    python scraper.py --yelp-key YOUR_API_KEY [--limit N] [--place-id ID]
+    python scraper.py [--limit N] [--place-id ID]
 
 Adds columns to places: address, phone, website, menu_url, hours, rating, review_count,
                          deals_text, scraped_menu_text, events_text, last_scraped
@@ -18,7 +18,7 @@ import re
 import sqlite3
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlparse, unquote, urlencode, parse_qs
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -27,11 +27,8 @@ from pypdf import PdfReader
 
 DB_PATH = "fedup.db"
 
-# Paste your API keys here to run without --yelp-key / --foursquare-key flags
-YELP_API_KEY = ""
+# Paste your API key here to run without --foursquare-key
 FOURSQUARE_API_KEY = "14SAZHJ2A3N2DLEGHH1BVYTLASYHZGVATGW1FW4WDS34QF5T"
-YELP_SEARCH_URL = "https://api.yelp.com/v3/businesses/search"
-YELP_DETAIL_URL = "https://api.yelp.com/v3/businesses/{}"
 
 SCRAPE_HEADERS = {
     "User-Agent": (
@@ -131,53 +128,6 @@ def save_place(conn: sqlite3.Connection, place_id: int, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Yelp
-# ---------------------------------------------------------------------------
-
-def yelp_search(name: str, lat: float, lon: float, api_key: str) -> dict | None:
-    params = {
-        "term": name,
-        "latitude": lat,
-        "longitude": lon,
-        "limit": 1,
-        "radius": 200,
-    }
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        resp = requests.get(YELP_SEARCH_URL, params=params, headers=headers, timeout=10)
-        resp.raise_for_status()
-        businesses = resp.json().get("businesses", [])
-        return businesses[0] if businesses else None
-    except requests.RequestException as exc:
-        print(f"    [yelp search error] {exc}")
-        return None
-
-
-def yelp_details(yelp_id: str, api_key: str) -> dict | None:
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        resp = requests.get(YELP_DETAIL_URL.format(yelp_id), headers=headers, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException as exc:
-        print(f"    [yelp detail error] {exc}")
-        return None
-
-
-def extract_yelp_data(biz: dict) -> dict:
-    hours_open = biz.get("hours", [])
-    hours_str = json.dumps(hours_open[0].get("open", [])) if hours_open else None
-    return {
-        "phone": biz.get("display_phone") or biz.get("phone"),
-        "website": biz.get("url"),
-        "menu_url": biz.get("menu_url"),
-        "rating": biz.get("rating"),
-        "review_count": biz.get("review_count"),
-        "hours": hours_str,
-    }
-
-
-# ---------------------------------------------------------------------------
 # Website discovery
 # ---------------------------------------------------------------------------
 
@@ -227,25 +177,6 @@ def foursquare_enrich(name: str, lat: float, lon: float, api_key: str) -> dict:
     except requests.RequestException as exc:
         print(f"    [foursquare error] {exc}")
         return {}
-
-
-def guess_website(name: str) -> str | None:
-    """Try common URL patterns for a restaurant name when no API is available."""
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9]", "", name.lower())
-    candidates = [
-        f"https://www.{slug}.com",
-        f"https://{slug}.com",
-        f"https://www.{slug}charlotte.com",
-    ]
-    for url in candidates:
-        try:
-            resp = requests.get(url, headers=SCRAPE_HEADERS, timeout=6, allow_redirects=True)
-            if resp.status_code < 400:
-                return url
-        except Exception:
-            continue
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +349,6 @@ def enrich_place(
     lat: float,
     lon: float,
     existing_website: str | None,
-    yelp_key: str | None,
     foursquare_key: str | None,
     conn: sqlite3.Connection,
     page=None,
@@ -426,21 +356,8 @@ def enrich_place(
     print(f"  {name} (id={place_id})")
     data: dict = {}
 
-    # --- Yelp ---
-    if yelp_key:
-        biz = yelp_search(name, lat, lon, yelp_key)
-        if biz:
-            detail = yelp_details(biz["id"], yelp_key)
-            if detail:
-                data.update(extract_yelp_data(detail))
-                print(f"    [yelp] found: {detail.get('url', '')}")
-            else:
-                data.update(extract_yelp_data(biz))
-        else:
-            print("    [yelp] no match")
-
-    # --- Foursquare (alternative to Yelp) ---
-    if foursquare_key and not data.get("website"):
+    # --- Foursquare ---
+    if foursquare_key:
         fsq_data = foursquare_enrich(name, lat, lon, foursquare_key)
         if fsq_data:
             data.update({k: v for k, v in fsq_data.items() if v})
@@ -449,21 +366,13 @@ def enrich_place(
             print("    [foursquare] no match")
 
     # --- Website discovery ---
-    # Use cached DB value, then fall back to URL pattern guessing
+    # Fall back to the cached DB value if Foursquare didn't find one
     website = data.get("website")
     bad_website = not website or any(d in (website or "") for d in ["yelp.com", "bing.com"])
 
     if bad_website and existing_website and not any(d in existing_website for d in ["yelp.com", "bing.com"]):
         website = existing_website
         data["website"] = website
-        bad_website = False
-
-    if bad_website:
-        guessed = guess_website(name)
-        if guessed:
-            print(f"    [guess] found: {guessed}")
-            website = guessed
-            data["website"] = website
 
     # --- Website scraping ---
     website = data.get("website")
@@ -484,8 +393,7 @@ def enrich_place(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Enrich FedUp places with menu/deals data")
-    parser.add_argument("--yelp-key", default=YELP_API_KEY or None, help="Yelp Fusion API key (recommended)")
-    parser.add_argument("--foursquare-key", default=FOURSQUARE_API_KEY or None, help="Foursquare Places API key (free alternative to Yelp)")
+    parser.add_argument("--foursquare-key", default=FOURSQUARE_API_KEY or None, help="Foursquare Places API key")
     parser.add_argument("--limit", type=int, help="Max number of places to process")
     parser.add_argument("--place-id", type=int, help="Process a single place by ID")
     parser.add_argument("--no-playwright", action="store_true", help="Disable Playwright (faster, but misses JS-rendered menus)")
@@ -501,7 +409,7 @@ def main() -> None:
         for place_id, name, lat, lon, existing_website in places:
             try:
                 enrich_place(place_id, name, lat, lon, existing_website,
-                             args.yelp_key, args.foursquare_key, conn, page=None)
+                             args.foursquare_key, conn, page=None)
             except Exception as exc:
                 print(f"    [error] {exc}")
             time.sleep(2)
@@ -519,7 +427,7 @@ def main() -> None:
                 for place_id, name, lat, lon, existing_website in places:
                     try:
                         enrich_place(place_id, name, lat, lon, existing_website,
-                                     args.yelp_key, args.foursquare_key, conn, page=page)
+                                     args.foursquare_key, conn, page=page)
                     except Exception as exc:
                         print(f"    [error] {exc}")
                     time.sleep(2)

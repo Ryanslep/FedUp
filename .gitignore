@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+fedup.db
+fedup.db.bak
+.vscode/

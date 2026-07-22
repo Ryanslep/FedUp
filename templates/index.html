@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FedUp</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -47,6 +48,41 @@
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
+    }
+
+    #map-view { padding: 20px 32px 0; }
+    #map-controls {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: #fff;
+      border: 1.5px solid #ddd;
+      border-radius: 10px;
+      padding: 12px 18px;
+      margin-bottom: 14px;
+      font-size: 0.88rem;
+    }
+    #map-controls label { display: flex; align-items: center; gap: 10px; flex: 1; }
+    #radius-slider { flex: 1; accent-color: #f0a500; }
+    #radius-value { font-weight: 700; color: #c47f00; white-space: nowrap; min-width: 56px; }
+    #map-hint { color: #999; font-size: 0.8rem; }
+    #map {
+      height: 400px;
+      border-radius: 12px;
+      border: 1.5px solid #ddd;
+      overflow: hidden;
+    }
+    .place-popup { font-family: inherit; }
+    .place-popup .popup-name { font-weight: 700; margin-bottom: 3px; }
+    .place-popup .popup-cuisine { color: #888; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.4px; }
+    .place-popup .popup-link { display: inline-block; margin-top: 6px; font-size: 0.82rem; color: #c47f00; cursor: pointer; text-decoration: underline; }
+    .center-pin-icon {
+      background: transparent;
+      border: none;
+      font-size: 24px;
+      line-height: 28px;
+      text-align: center;
+      cursor: grab;
     }
 
     /* Toggle chips */
@@ -259,6 +295,25 @@
       line-height: 1.5;
     }
 
+    .events-list { display: flex; flex-direction: column; gap: 8px; }
+    .event-item {
+      background: #eef8f2;
+      border: 1px solid #3f9d6f;
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+    .event-name {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #1e6b45;
+    }
+    .event-detail {
+      font-size: 0.82rem;
+      color: #3f7d5c;
+      margin-top: 3px;
+      line-height: 1.45;
+    }
+
     .menu-section { margin-bottom: 20px; }
     .menu-section-title {
       font-size: 0.95rem;
@@ -311,6 +366,17 @@
   <span>🍽</span>
   <h1>FedUp</h1>
 </header>
+
+<div id="map-view">
+  <div id="map-controls">
+    <label>
+      Radius: <span id="radius-value">2 mi</span>
+      <input type="range" id="radius-slider" min="0.25" max="5" step="0.25" value="2" />
+    </label>
+    <span id="map-hint">Drag the 🎯 pin to search a different spot</span>
+  </div>
+  <div id="map"></div>
+</div>
 
 <div id="search-bar">
   <input type="text" id="search" placeholder="Search restaurants, cuisine…" />
@@ -365,6 +431,7 @@
   </div>
 </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
   let allPlaces = [];
   const filters = { search: '', cuisine: '', minRating: '', deals: false, events: false };
@@ -373,6 +440,16 @@
     const res = await fetch('/api/places');
     allPlaces = await res.json();
     buildCuisineOptions();
+
+    const withCoords = allPlaces.filter(p => p.lat != null && p.lon != null);
+    if (withCoords.length) {
+      mapCenter = {
+        lat: withCoords.reduce((s, p) => s + p.lat, 0) / withCoords.length,
+        lon: withCoords.reduce((s, p) => s + p.lon, 0) / withCoords.length,
+      };
+      initMap();
+    }
+
     applyFilters();
   }
 
@@ -393,7 +470,7 @@
     });
   }
 
-  function applyFilters() {
+  function getFilteredPlaces() {
     let places = allPlaces;
     if (filters.search) {
       const q = filters.search;
@@ -418,7 +495,12 @@
     if (filters.events) {
       places = places.filter(p => p.has_events);
     }
-    renderGrid(places);
+    return places;
+  }
+
+  function applyFilters() {
+    renderGrid(getFilteredPlaces());
+    if (map) updateMapMarkers();
   }
 
   function renderGrid(places) {
@@ -530,6 +612,18 @@
                <div class="deals-box">${escHtml(p.deals_text)}</div>`;
     }
 
+    // Events
+    if (p.events_text) {
+      const events = parseEvents(p.events_text);
+      html += `<div class="section-heading">Events &amp; Things To Do</div>
+               <div class="events-list">${events.map(e => `
+                 <div class="event-item">
+                   <div class="event-name">🎉 ${escHtml(e.name)}</div>
+                   ${e.detail ? `<div class="event-detail">${escHtml(e.detail)}</div>` : ''}
+                 </div>
+               `).join('')}</div>`;
+    }
+
     // Menu
     if (p.menu_sections && p.menu_sections.length) {
       html += `<div class="section-heading">Menu</div>`;
@@ -556,6 +650,36 @@
     }
 
     return html || '<p style="color:#aaa;font-size:.9rem">No additional info available.</p>';
+  }
+
+  // Splits a freeform events_text blob into individual {name, detail} entries.
+  // Source text style varies a lot (semicolons, sentences, comma lists), so try
+  // separators in order of how unambiguous they are.
+  function parseEvents(text) {
+    let parts;
+    if (text.includes(';')) {
+      parts = text.split(';');
+    } else if (/[.!]\s+[A-Z]/.test(text)) {
+      parts = text.split(/[.!]\s+(?=[A-Z])/);
+    } else {
+      parts = text.split(/,\s+/);
+    }
+
+    return parts
+      .map(s => s.trim().replace(/[.\s]+$/, ''))
+      .filter(Boolean)
+      .map(seg => {
+        let m = seg.match(/^([^:]{2,60}?):\s*(.+)$/);
+        if (m) return { name: m[1].trim(), detail: m[2].trim() };
+
+        m = seg.match(/^([^-–—]{2,60}?)\s[-–—]\s(.+)$/);
+        if (m) return { name: m[1].trim(), detail: m[2].trim() };
+
+        m = seg.match(/^([^(]{2,60}?)\s*\(([^)]+)\)\s*(.*)$/);
+        if (m) return { name: m[1].trim(), detail: (m[2] + (m[3] ? ' ' + m[3] : '')).trim() };
+
+        return { name: seg, detail: '' };
+      });
   }
 
   function formatCuisine(cuisine, amenity) {
@@ -598,6 +722,85 @@
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') document.getElementById('modal-overlay').classList.remove('open');
+  });
+
+  // ---- Map ----
+  let map, centerMarker, radiusCircle;
+  let placeMarkers = [];
+  let mapCenter = null;      // {lat, lon} search origin, set once places load
+  let mapRadiusMiles = 2;
+
+  function haversineMiles(lat1, lon1, lat2, lon2) {
+    const R = 3958.8; // Earth radius in miles
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  function initMap() {
+    map = L.map('map', { zoomControl: true, scrollWheelZoom: true, dragging: true })
+      .setView([mapCenter.lat, mapCenter.lon], 15);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    const targetIcon = L.divIcon({
+      html: '🎯', className: 'center-pin-icon',
+      iconSize: [28, 28], iconAnchor: [14, 14],
+    });
+
+    centerMarker = L.marker([mapCenter.lat, mapCenter.lon], { draggable: true, icon: targetIcon, zIndexOffset: 1000 }).addTo(map);
+    radiusCircle = L.circle([mapCenter.lat, mapCenter.lon], {
+      radius: mapRadiusMiles * 1609.34,
+      color: '#f0a500', weight: 2, fillColor: '#f0a500', fillOpacity: 0.08,
+    }).addTo(map);
+
+    centerMarker.on('drag', e => {
+      const pos = e.target.getLatLng();
+      radiusCircle.setLatLng(pos);
+    });
+    centerMarker.on('dragend', e => {
+      const pos = e.target.getLatLng();
+      mapCenter = { lat: pos.lat, lon: pos.lng };
+      updateMapMarkers();
+    });
+  }
+
+  function updateMapMarkers() {
+    if (!map || !mapCenter) return;
+
+    radiusCircle.setLatLng([mapCenter.lat, mapCenter.lon]);
+    radiusCircle.setRadius(mapRadiusMiles * 1609.34);
+
+    placeMarkers.forEach(m => map.removeLayer(m));
+    placeMarkers = [];
+
+    getFilteredPlaces()
+      .filter(p => p.lat != null && p.lon != null)
+      .filter(p => haversineMiles(mapCenter.lat, mapCenter.lon, p.lat, p.lon) <= mapRadiusMiles)
+      .forEach(p => {
+        const marker = L.marker([p.lat, p.lon]).addTo(map);
+        const popupEl = document.createElement('div');
+        popupEl.className = 'place-popup';
+        popupEl.innerHTML = `
+          <div class="popup-name">${escHtml(p.name)}</div>
+          <div class="popup-cuisine">${formatCuisine(p.cuisine, p.amenity)}</div>
+          <div class="popup-link">View details →</div>
+        `;
+        popupEl.querySelector('.popup-link').addEventListener('click', () => openModal(p.id));
+        marker.bindPopup(popupEl);
+        placeMarkers.push(marker);
+      });
+  }
+
+  document.getElementById('radius-slider').addEventListener('input', e => {
+    mapRadiusMiles = parseFloat(e.target.value);
+    document.getElementById('radius-value').textContent = `${mapRadiusMiles} mi`;
+    updateMapMarkers();
   });
 
   loadPlaces();

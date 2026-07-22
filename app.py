@@ -100,9 +100,9 @@ def index():
 @app.route("/api/places")
 def list_places():
     rows = get_db().execute(
-        """SELECT id, name, cuisine, amenity, rating, phone, website,
+        """SELECT id, name, cuisine, amenity, rating, phone, website, lat, lon,
                   deals_text IS NOT NULL AND deals_text != '' AS has_deals,
-                  (scraped_menu_text LIKE '%event%' OR deals_text LIKE '%event%') AS has_events
+                  events_text IS NOT NULL AND events_text != '' AS has_events
            FROM places ORDER BY name"""
     ).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -117,7 +117,8 @@ def get_place(place_id):
         return jsonify({"error": "not found"}), 404
 
     data = dict(row)
-    data["address"] = reverse_geocode(data["lat"], data["lon"])
+    if not data.get("address"):
+        data["address"] = reverse_geocode(data["lat"], data["lon"])
     data["menu_sections"] = parse_menu(data.get("scraped_menu_text"))
 
     # Parse hours JSON string

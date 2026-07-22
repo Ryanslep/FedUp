@@ -4,14 +4,15 @@ FedUp scraper — enriches the places table with data from Yelp and restaurant w
 Usage:
     python scraper.py --yelp-key YOUR_API_KEY [--limit N] [--place-id ID]
 
-Adds columns to places: yelp_id, phone, website, menu_url, hours, rating, review_count,
-                         deals_text, scraped_menu_text, last_scraped
+Adds columns to places: address, phone, website, menu_url, hours, rating, review_count,
+                         deals_text, scraped_menu_text, events_text, last_scraped
 
 Playwright is used automatically for pages that require JavaScript (ordering platforms,
 SPAs, etc.). Falls back to plain requests for simple HTML pages.
 """
 
 import argparse
+import io
 import json
 import re
 import sqlite3
@@ -22,6 +23,7 @@ from urllib.parse import urlparse, unquote, urlencode, parse_qs
 import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from pypdf import PdfReader
 
 DB_PATH = "fedup.db"
 
@@ -62,6 +64,25 @@ DEALS_PATTERNS = [
     re.compile(r"(\$\d+(?:\.\d+)? off[^<]{0,100})", re.I | re.S),
 ]
 
+EVENTS_PATTERNS = [
+    # Scheduled events
+    re.compile(r"(trivia night[^<]{0,200}|trivia[^<]{0,200})", re.I | re.S),
+    re.compile(r"(bingo[^<]{0,200})", re.I | re.S),
+    re.compile(r"(live music[^<]{0,200}|live band[^<]{0,200})", re.I | re.S),
+    re.compile(r"(karaoke[^<]{0,200})", re.I | re.S),
+    re.compile(r"(arts?\s*(?:and|&)\s*crafts?[^<]{0,200})", re.I | re.S),
+    re.compile(r"(open mic[^<]{0,200})", re.I | re.S),
+    re.compile(r"(dj\s+(?:night|set)[^<]{0,200})", re.I | re.S),
+    # Standing things to do / amenities
+    re.compile(r"(pool tables?[^<]{0,200})", re.I | re.S),
+    re.compile(r"(dart\s*boards?[^<]{0,200}|darts[^<]{0,200})", re.I | re.S),
+    re.compile(r"(board games?[^<]{0,200})", re.I | re.S),
+    re.compile(r"(arcade[^<]{0,200})", re.I | re.S),
+    re.compile(r"(shuffleboard[^<]{0,200})", re.I | re.S),
+    re.compile(r"(cornhole[^<]{0,200})", re.I | re.S),
+    re.compile(r"(ping\s*pong[^<]{0,200}|table tennis[^<]{0,200})", re.I | re.S),
+]
+
 
 # ---------------------------------------------------------------------------
 # DB helpers
@@ -71,7 +92,7 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
     cur = conn.cursor()
     existing = {row[1] for row in cur.execute("PRAGMA table_info(places)")}
     new_cols = {
-        "yelp_id": "TEXT",
+        "address": "TEXT",
         "phone": "TEXT",
         "website": "TEXT",
         "menu_url": "TEXT",
@@ -80,6 +101,7 @@ def ensure_columns(conn: sqlite3.Connection) -> None:
         "review_count": "INTEGER",
         "deals_text": "TEXT",
         "scraped_menu_text": "TEXT",
+        "events_text": "TEXT",
         "last_scraped": "TEXT",
     }
     for col, dtype in new_cols.items():
@@ -146,7 +168,6 @@ def extract_yelp_data(biz: dict) -> dict:
     hours_open = biz.get("hours", [])
     hours_str = json.dumps(hours_open[0].get("open", [])) if hours_open else None
     return {
-        "yelp_id": biz.get("id"),
         "phone": biz.get("display_phone") or biz.get("phone"),
         "website": biz.get("url"),
         "menu_url": biz.get("menu_url"),
@@ -305,10 +326,45 @@ def _extract_deals(soup: BeautifulSoup) -> str | None:
     return "\n---\n".join(hits) if hits else None
 
 
+def _extract_events(soup: BeautifulSoup) -> str | None:
+    text = soup.get_text(separator=" ", strip=True)
+    hits = []
+    for pat in EVENTS_PATTERNS:
+        for m in pat.finditer(text):
+            hits.append(m.group(0).strip()[:300])
+    return "\n---\n".join(hits) if hits else None
+
+
 def _clean_text(soup: BeautifulSoup) -> str:
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
     return soup.get_text(separator="\n", strip=True)
+
+
+def _is_pdf_url(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(".pdf")
+
+
+_UNI_GLYPH = re.compile(r"/uni([0-9A-Fa-f]{4})")
+
+
+def _fix_pdf_glyphs(text: str) -> str:
+    # Some embedded PDF fonts leak raw glyph names (e.g. "/uni0020") instead of
+    # decoding them, when their ToUnicode CMap can't be parsed normally.
+    text = _UNI_GLYPH.sub(lambda m: chr(int(m.group(1), 16)), text)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
+def _fetch_pdf_text(url: str) -> str | None:
+    try:
+        resp = requests.get(url, headers=SCRAPE_HEADERS, timeout=15)
+        resp.raise_for_status()
+        reader = PdfReader(io.BytesIO(resp.content))
+        text = "\n\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        return _fix_pdf_glyphs(text) if text else None
+    except Exception as exc:
+        print(f"    [pdf error] {url}: {exc}")
+        return None
 
 
 def scrape_website(website_url: str, page=None) -> dict:
@@ -320,24 +376,34 @@ def scrape_website(website_url: str, page=None) -> dict:
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # Deals from homepage
+    # Deals and events from homepage
     deals = _extract_deals(soup)
     if deals:
         result["deals_text"] = deals
 
+    events = _extract_events(soup)
+    if events:
+        result["events_text"] = events
+
     # Follow menu link
     menu_link = _find_menu_link(soup, website_url)
     if menu_link and menu_link != website_url:
-        menu_html = fetch_html(menu_link, page)
-        if menu_html:
-            menu_soup = BeautifulSoup(menu_html, "html.parser")
-            menu_text = _clean_text(menu_soup)
-            if menu_text and "enable JavaScript" not in menu_text:
-                result["scraped_menu_text"] = menu_text[:4000]
-                result["menu_url"] = menu_link
-            elif page:
-                # Already tried playwright inside fetch_html — nothing more to do
-                result["menu_url"] = menu_link
+        if _is_pdf_url(menu_link):
+            pdf_text = _fetch_pdf_text(menu_link)
+            if pdf_text:
+                result["scraped_menu_text"] = pdf_text[:4000]
+            result["menu_url"] = menu_link
+        else:
+            menu_html = fetch_html(menu_link, page)
+            if menu_html:
+                menu_soup = BeautifulSoup(menu_html, "html.parser")
+                menu_text = _clean_text(menu_soup)
+                if menu_text and "enable JavaScript" not in menu_text:
+                    result["scraped_menu_text"] = menu_text[:4000]
+                    result["menu_url"] = menu_link
+                elif page:
+                    # Already tried playwright inside fetch_html — nothing more to do
+                    result["menu_url"] = menu_link
 
     return result
 

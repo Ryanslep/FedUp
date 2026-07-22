@@ -24,6 +24,11 @@ You'll be given a restaurant's `place_id` plus whatever identifying details are 
 
 Use WebSearch to locate the restaurant's official site and review listings, then WebFetch to pull page content. Prefer the official website and its menu page over third-party aggregators for menu/deals detail; use review sites mainly for phone/rating/hours when the official site lacks them.
 
+## When WebFetch isn't enough
+Two situations WebFetch can't handle on its own — use `scraper.py`'s helpers via Bash instead:
+- **PDF menus**: if a menu link ends in `.pdf`, don't WebFetch it (you'll get garbled binary). Run `python -c "from scraper import fetch_pdf_text; print(fetch_pdf_text('<url>'))"` and use that output as `scraped_menu_text`.
+- **JS-heavy sites** (a fetch comes back blank or shows a "please enable JavaScript" message — common on React/Vue ordering platforms): run `python -c "from scraper import render_js_page; print(render_js_page('<url>'))"` to get the rendered HTML instead.
+
 ## Saving to the database
 Once you've gathered what you can, write the fields as JSON to a temp file and upsert them with `save_research.py` — do not print the data as a report. Use a quoted heredoc so quotes/apostrophes in scraped text (menu items, deals) don't break the shell:
 
